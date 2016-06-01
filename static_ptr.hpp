@@ -25,6 +25,7 @@ template <class TypeT, size_t MaxSize>
 class static_ptr {
 public:
   typedef TypeT* pointer;
+  typedef TypeT element_type;
 
 private:
   struct Cloneable;
