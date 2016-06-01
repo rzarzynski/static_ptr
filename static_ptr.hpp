@@ -23,6 +23,8 @@
 
 template <class TypeT, size_t MaxSize>
 class static_ptr {
+  /* All variants of static_ptr are friends. */
+  template <class Tf, size_t Sf> friend class static_ptr;
 public:
   typedef TypeT* pointer;
   typedef TypeT element_type;
@@ -49,7 +51,22 @@ public:
   static_ptr() {
   }
 
-  static_ptr(static_ptr&& rhs) {
+  /* Constructor: the nullptr case. */
+  static_ptr(nullptr_t) noexcept : static_ptr() {};
+
+  /* Constructor: move from a compatible variant of static_ptr. Variants
+   * are compatible only if:
+   *  1) a source one is smaller or equal in terms of available storage
+   *     size than a destination one AND
+   *  2) a destination one encapsulates a type that stays in is_base_of
+   *     relationship with type stored by a source one. */
+  template <class Tf, size_t Sf>
+  static_ptr(static_ptr<Tf, Sf>&& rhs) {
+    static_assert(MaxSize >= Sf,
+                  "constructed from too big static_ptr instance");
+    static_assert(std::is_base_of<TypeT, Tf>::value,
+                  "constructed from non-related static_ptr instance");
+
     if (false == rhs.is_empty) {
       rhs.get_lcm()->clone_obj(storage, std::move(*rhs.get()));
       rhs.get_lcm()->clone_lcm(lcm_storage);
@@ -57,12 +74,30 @@ public:
     }
   }
 
-  static_ptr& operator=(static_ptr&& rhs) {
+  /* Assignment: move from a compatible variant of static_ptr. Variants
+   * are compatible only if:
+   *  1) a source one is smaller or equal in terms of available storage
+   *     size than a destination one AND
+   *  2) a destination one encapsulates a type that stays in is_base_of
+   *     relationship with type stored by a source one. */
+  template <class Tf, size_t Sf>
+  static_ptr& operator=(static_ptr<Tf, Sf>&& rhs) {
+    static_assert(MaxSize >= Sf,
+                  "assigned from too big static_ptr instance");
+    static_assert(std::is_base_of<TypeT, Tf>::value,
+                  "assigned from non-related static_ptr instance");
+
+    if (false == this->is_empty) {
+      this->get()->~TypeT();
+    }
+
     if (false == rhs.is_empty) {
       rhs.lcm->clone_obj(storage, std::move(*rhs.get()));
       rhs.lcm->clone_lcm(lcm_storage);
-      is_empty = false;
+      rhs.get()->~TypeT();
     }
+
+    this->is_empty = rhs.is_empty;
   }
 
   /* Let's mimic the std::unique_ptr's behaviour. It's very useful to say to
