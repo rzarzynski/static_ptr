@@ -23,7 +23,7 @@
 
 class Interface {
 public:
-  virtual ~Interface() {};
+//  virtual ~Interface() {};
   virtual void print_name() const noexcept = 0;
 };
 

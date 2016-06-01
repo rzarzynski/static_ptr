@@ -30,21 +30,22 @@ public:
   typedef TypeT element_type;
 
 private:
-  struct Cloneable;
-  typedef Cloneable* pointer_lcm;
-
   /* Virtual constructors for C++... */
-  struct Cloneable {
-    virtual pointer clone_obj(void *, TypeT&&) = 0;
-    virtual pointer_lcm clone_lcm(void *) = 0;
+  struct LifeCycleManager {
+    virtual void clone_obj(void *, TypeT&&) const = 0;
+    virtual void clone_lcm(void *) const = 0;
+
+    virtual void delete_obj(TypeT&) const = 0;
   };
 
+  typedef const LifeCycleManager* pointer_lcm;
+
   unsigned char storage[MaxSize];
-  unsigned char lcm_storage[sizeof(Cloneable)];
+  unsigned char storage_lcm[sizeof(LifeCycleManager)];
   bool is_empty = true;
 
   pointer_lcm get_lcm() noexcept {
-    return reinterpret_cast<pointer_lcm>(lcm_storage);
+    return reinterpret_cast<pointer_lcm>(storage_lcm);
   }
 
 public:
@@ -69,9 +70,13 @@ public:
 
     if (false == rhs.is_empty) {
       rhs.get_lcm()->clone_obj(storage, std::move(*rhs.get()));
-      rhs.get_lcm()->clone_lcm(lcm_storage);
-      is_empty = false;
+      rhs.get_lcm()->clone_lcm(storage_lcm);
+
+      /* Using the already std::moved rhs_obj_ptr is fully intensional. */
+      rhs.get_lcm()->delete_obj(std::move(*rhs.get()));
     }
+
+    this->is_empty = rhs.is_empty;
   }
 
   /* Assignment: move from a compatible variant of static_ptr. Variants
@@ -87,14 +92,18 @@ public:
     static_assert(std::is_base_of<TypeT, Tf>::value,
                   "assigned from non-related static_ptr instance");
 
-    if (false == this->is_empty) {
-      this->get()->~TypeT();
+    auto this_obj_ptr = this->get();
+    if (this_obj_ptr) {
+      this->get_lcm()->delete_obj(*this_obj_ptr);
     }
 
-    if (false == rhs.is_empty) {
-      rhs.lcm->clone_obj(storage, std::move(*rhs.get()));
-      rhs.lcm->clone_lcm(lcm_storage);
-      rhs.get()->~TypeT();
+    auto rhs_obj_ptr = rhs.get();
+    if (rhs_obj_ptr) {
+      rhs.get_lcm()->clone_obj(storage, std::move(*rhs.get()));
+      rhs.get_lcm()->clone_lcm(storage_lcm);
+
+      /* Using the already std::moved rhs_obj_ptr is fully intensional. */
+      rhs.get_lcm()->delete_obj(*rhs_obj_ptr);
     }
 
     this->is_empty = rhs.is_empty;
@@ -109,17 +118,21 @@ public:
   template <class T,
             typename std::enable_if<std::is_base_of<TypeT, T>::value>::type* = nullptr >
   static_ptr(T&& t) {
-    struct ClonableT : public Cloneable {
-      virtual TypeT* clone_obj(void* p, TypeT&& u) override {
-        return new (p) T(static_cast<T&&>(u));
+    struct ClonableT : public LifeCycleManager {
+      virtual void clone_obj(void* p, TypeT&& u) const override {
+        new (p) T(static_cast<T&&>(u));
       }
 
-      virtual pointer_lcm clone_lcm(void* p) override {
-        return new (p) ClonableT;
+      virtual void clone_lcm(void* p) const override {
+        new (p) ClonableT;
+      }
+
+      virtual void delete_obj(TypeT& t) const override {
+        static_cast<T&>(t).~T();
       }
     };
 
-    new (lcm_storage) ClonableT();
+    new (storage_lcm) ClonableT();
     get_lcm()->clone_obj(&storage, std::move(t));
     is_empty = false;
   }
@@ -127,7 +140,7 @@ public:
   ~static_ptr() {
     auto obj = get();
     if (obj) {
-      obj->~TypeT();
+      get_lcm()->delete_obj(*obj);
     }
   }
 
