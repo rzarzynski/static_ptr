@@ -186,3 +186,15 @@ public:
     return is_empty;
   }
 };
+
+template <class First>
+constexpr size_t maxsizeof() {
+  return sizeof(First);
+}
+
+template <class First, class Second, class... Args>
+constexpr size_t maxsizeof() {
+  return maxsizeof<First>() > maxsizeof<Second, Args...>()
+                            ? maxsizeof<First>()
+                            : maxsizeof<Second, Args...>();
+}
