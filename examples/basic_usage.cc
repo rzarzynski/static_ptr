@@ -21,56 +21,46 @@
 
 #include "static_ptr.hpp"
 
-class Interface {
-public:
-//  virtual ~Interface() {};
-  virtual void print_name() const noexcept = 0;
+struct Interface {
+  /* NOTE: the destructor is NOT virtual. */
+  virtual const char* get_name() const = 0;
 };
 
-class Base1 : public Interface {
-  long member[2];
-public:
-  virtual void print_name() const noexcept override {
-    std::cout << "Base1" << std::endl;
-  }
-};
-
-class Base2 : public Interface {
+struct ConcreteA : public Interface {
   long member[4];
-public:
-  virtual ~Base2() {
-    std::cout << "Base2 dted" << std::endl;
-  }
-
-  virtual void print_name() const noexcept override {
-    std::cout << "Base2" << std::endl;
-  }
+  const char* get_name() const override { return "ConcreteA"; }
 };
 
+struct ConcreteB : public Interface {
+  long member[4];
+  const char* get_name() const override { return "ConcreteB"; }
+  ~ConcreteB() { std::cout << "ConcreteB destructed" << std::endl; }
+};
 
-class Factory {
-  static constexpr size_t max_size = sizeof(Base1) > sizeof(Base2) ? sizeof(Base1) : sizeof(Base2);
-public:
-  static constexpr size_t get_max_size() {
-    return max_size;
-  }
-
-  // cannot use get_max_size here due to a language quirk
-  static static_ptr<Interface, max_size> make_instance(bool first_one) {
+struct Factory {
+  static static_ptr<Interface,
+                    maxsizeof<ConcreteA, ConcreteB>() >
+  make_instance(bool first_one) {
     if (first_one) {
-      return Base1();
+      return ConcreteA();
     } else {
-      return Base2();
+      return ConcreteB();
     }
   }
 };
 
 
 int main (void) {
-  std::cout << "max size: " << Factory::get_max_size() << std::endl;
+  auto ptrA = Factory::make_instance(true);
+  auto ptrB = Factory::make_instance(false);
 
-  static_ptr<Interface, Factory::get_max_size()> ptr = Base2();
-  ptr->print_name();
+  /* Result: ptrA->get_name(): ConcreteA */
+  std::cout << "ptrA->get_name(): " << ptrA->get_name() << std::endl;
+
+  /* Result:
+   *  ptrB->get_name(): ConcreteB
+   *  ConcreteB destructed */
+  std::cout << "ptrB->get_name(): " << ptrB->get_name() << std::endl;
 
   return 0;
 }
