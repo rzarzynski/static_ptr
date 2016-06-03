@@ -89,10 +89,11 @@ private:
       rhs.get_lcm()->clone_lcm(storage_lcm);
 
       /* Using the already std::moved rhs_obj_ptr is fully intensional. */
+      rhs.is_empty = true;
       rhs.get_lcm()->delete_obj(*rhs_obj_ptr);
-    }
 
-    this->is_empty = rhs.is_empty;
+      this->is_empty = false;
+    }
   }
 
 public:
@@ -103,6 +104,14 @@ public:
 
   /* Constructor: the nullptr case. */
   static_ptr(nullptr_t) noexcept : static_ptr() {};
+
+  /* Constructor: move from another instance of absolutely the same
+   * variant of static_ptr. In other words, rhs must be an instance
+   * of static<TypeT, MaxSize). The constructor is present only because
+   * of the Return Value Optimization.  */
+  static_ptr(static_ptr&& rhs) {
+    _clone(std::move(rhs));
+  }
 
   /* Constructor: move from a compatible variant of static_ptr. Variants
    * are compatible only if:
@@ -142,6 +151,7 @@ public:
     pointer this_obj_ptr = this->get();
     if (this_obj_ptr) {
       this->get_lcm()->delete_obj(*this_obj_ptr);
+      this->is_empty = true;
     }
 
     /* Second, MoveConstruct a new object using our own storage but basing
