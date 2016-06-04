@@ -33,8 +33,12 @@ struct ConcreteA : public Interface {
 
 struct ConcreteB : public Interface {
   long member[4];
+  ConcreteB(long x)
+    : member { x, 1, 2, 3 } {
+    std::cout << get_name() << " constructed with x=" << x << std::endl;
+  }
   const char* get_name() const override { return "ConcreteB"; }
-  ~ConcreteB() { std::cout << "ConcreteB destructed" << std::endl; }
+  ~ConcreteB() { std::cout << get_name() << " destructed" << std::endl; }
 };
 
 struct Factory {
@@ -42,9 +46,9 @@ struct Factory {
                     maxsizeof<ConcreteA, ConcreteB>() >
   make_instance(bool first_one) {
     if (first_one) {
-      return ConcreteA();
+      return make_static<ConcreteA>();
     } else {
-      return ConcreteB();
+      return make_static<ConcreteB>(3);
     }
   }
 };

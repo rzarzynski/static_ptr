@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <type_traits>
+#include <tuple>
 
 
 template <class TypeT, size_t MaxSize>
@@ -80,6 +81,22 @@ private:
     is_empty = false;
   }
 
+  /* Helpers for make_obj. */
+  template<int ...> struct seq { };
+
+  template<int N, int ...S>
+  struct gens : gens<N-1, N-1, S...> { };
+
+  template<int ...S>
+  struct gens<1, S...> {
+    typedef seq<S...> type;
+  };
+
+  template<class Type, class Tuple, int ...S>
+  void _make_obj(Tuple&& tup, seq<S...>) {
+    _emplace<Type>(std::get<S>(tup) ...);
+  }
+
   template <class Tf, size_t Sf>
   void _clone(static_ptr<Tf, Sf>&& rhs) {
     typename static_ptr<Tf, Sf>::pointer rhs_obj_ptr = rhs.get();
@@ -129,13 +146,15 @@ public:
     _clone(std::move(rhs));
   }
 
-  /* Constructor: the emplace caller. */
-  template <
-    class Tn,
-    typename std::enable_if<
-      std::is_base_of<TypeT, Tn>::value>::type* = nullptr >
-  static_ptr(Tn&& t) {
-    _emplace<Tn>(std::move(t));
+  /* Constructor: the from-make_static case. */
+  template <class T>
+  static_ptr(T&& tup) {
+    using TypePtr = typename std::tuple_element<0, T>::type;
+    using Type    = typename std::remove_pointer<TypePtr>::type;
+
+    constexpr size_t tup_size = std::tuple_size<T>::value;
+
+    _make_obj<Type>(std::move(tup), typename gens< tup_size >::type());
   }
 
   /* Assignment: move from a compatible variant of static_ptr. For details
@@ -207,4 +226,27 @@ constexpr size_t maxsizeof() {
   return maxsizeof<First>() > maxsizeof<Second, Args...>()
                             ? maxsizeof<First>()
                             : maxsizeof<Second, Args...>();
+}
+
+
+/* C++ doesn't allow to explicitly specify parameters for template constructor
+ * of a class template. They can be deduced only. Because of the restriction we
+ * need a helper function to construct an instance of static_ptr::element_type
+ * directly in the memory under static_ptr::storage_obj - without spawning any
+ * temporary of static_ptr::element_type along the way.
+ *
+ * The idea is to prepare a std::tuple containing all information necessary to
+ * create an object in its final destination and pass it to specific template
+ * constructor of static_ptr that can live with the deduction-only limitation.
+ * The std::tuple object should be optimized out thanks to the RVO.
+ *
+ * Another benefit is the similarity to std::make_shared and std::make_unique
+ * functions. */
+template <class T, class... Args>
+std::tuple<T*, Args...> make_static(Args&&... args)
+{
+  /* As C++ doesn't offer a template constructor for a class template it's
+   * impossible to construct the static_ptr::element_type inside  */
+  return std::forward_as_tuple(static_cast<T*>(nullptr),
+                               std::forward<Args>(args)...);
 }
