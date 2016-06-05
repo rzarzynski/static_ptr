@@ -40,12 +40,12 @@ private:
     virtual void delete_obj(element_type&) const = 0;
   };
 
-  mutable unsigned char storage_obj[element_max_size];
-  unsigned char storage_lcm[sizeof(LifeCycleManager)];
+  mutable typename std::aligned_storage<element_max_size>::type storage_obj;
+  typename std::aligned_storage<sizeof(LifeCycleManager)>::type storage_lcm;
   bool is_empty = true;
 
   const LifeCycleManager& get_lcm() noexcept {
-    return *reinterpret_cast<const LifeCycleManager*>(storage_lcm);
+    return reinterpret_cast<const LifeCycleManager&>(storage_lcm);
   }
 
   template <
@@ -75,8 +75,8 @@ private:
     };
 
     /* The storage_lcm shouldn't store anything more than the VPTR. */
-    new (storage_lcm) LCMe();
-    new (storage_obj) Te(std::forward<Args>(args)...);
+    new (&storage_lcm) LCMe();
+    new (&storage_obj) Te(std::forward<Args>(args)...);
     is_empty = false;
   }
 
@@ -101,8 +101,8 @@ private:
     typename static_ptr<Tf, Sf>::pointer rhs_obj_ptr = rhs.get();
 
     if (rhs_obj_ptr) {
-      rhs.get_lcm().clone_obj(storage_obj, std::move(*rhs_obj_ptr));
-      rhs.get_lcm().clone_lcm(storage_lcm);
+      rhs.get_lcm().clone_obj(&storage_obj, std::move(*rhs_obj_ptr));
+      rhs.get_lcm().clone_lcm(&storage_lcm);
 
       /* Using the already std::moved rhs_obj_ptr is fully intensional. */
       rhs.is_empty = true;
@@ -168,8 +168,8 @@ public:
     /* First, release (destroy) the currently stored object if necessary. */
     pointer this_obj_ptr = this->get();
     if (this_obj_ptr) {
-      this->get_lcm().delete_obj(*this_obj_ptr);
       this->is_empty = true;
+      this->get_lcm().delete_obj(*this_obj_ptr);
     }
 
     /* Second, MoveConstruct a new object using our own storage but basing
@@ -197,7 +197,7 @@ public:
   }
 
   pointer get() const noexcept {
-    return is_empty ? nullptr : reinterpret_cast<pointer>(storage_obj);
+    return is_empty ? nullptr : reinterpret_cast<pointer>(&storage_obj);
   }
 
   template <
