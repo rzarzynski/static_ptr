@@ -29,24 +29,23 @@ class static_ptr {
 public:
   typedef TypeT* pointer;
   typedef TypeT element_type;
+  static constexpr size_t element_max_size = MaxSize;
 
 private:
   /* Virtual constructors for C++... */
   struct LifeCycleManager {
-    virtual void clone_obj(void *, TypeT&&) const = 0;
+    virtual void clone_obj(void *, element_type&&) const = 0;
     virtual void clone_lcm(void *) const = 0;
 
-    virtual void delete_obj(TypeT&) const = 0;
+    virtual void delete_obj(element_type&) const = 0;
   };
 
-  typedef const LifeCycleManager* pointer_lcm;
-
-  unsigned char storage[MaxSize];
+  mutable unsigned char storage_obj[element_max_size];
   unsigned char storage_lcm[sizeof(LifeCycleManager)];
   bool is_empty = true;
 
-  pointer_lcm get_lcm() noexcept {
-    return reinterpret_cast<pointer_lcm>(storage_lcm);
+  const LifeCycleManager& get_lcm() noexcept {
+    return *reinterpret_cast<const LifeCycleManager*>(storage_lcm);
   }
 
   template <
@@ -54,15 +53,15 @@ private:
     class... Args,
     /* Dummy template parameter solely for SFINAE. */
     typename std::enable_if<
-      std::is_base_of<TypeT, Te>::value>::type* = nullptr >
+      std::is_base_of<element_type, Te>::value>::type* = nullptr >
   void _emplace(Args&&... args) {
     /* Life cycle manager for the type Te. Due to nesting this class, each
      * instance of the emplace template will receive its own LCM with info
      * about the concrete Te deeply buried inside. That's the way how we
      * support "virtual constructors" and call a proper destructor even if
-     * TypeT hasn't declared its dtor as virtual. */
+     * element_type hasn't declared its dtor as virtual. */
     struct LCMe : public LifeCycleManager {
-      virtual void clone_obj(void* p, TypeT&& u) const override {
+      virtual void clone_obj(void* p, element_type&& u) const override {
         new (p) Te(static_cast<Te&&>(u));
       }
 
@@ -70,14 +69,14 @@ private:
         new (p) LCMe;
       }
 
-      virtual void delete_obj(TypeT& t) const override {
+      virtual void delete_obj(element_type& t) const override {
         static_cast<Te&>(t).~Te();
       }
     };
 
     /* The storage_lcm shouldn't store anything more than the VPTR. */
     new (storage_lcm) LCMe();
-    new (storage) Te(std::forward<Args>(args)...);
+    new (storage_obj) Te(std::forward<Args>(args)...);
     is_empty = false;
   }
 
@@ -98,16 +97,16 @@ private:
   }
 
   template <class Tf, size_t Sf>
-  void _clone(static_ptr<Tf, Sf>&& rhs) {
+  void _transfer_obj(static_ptr<Tf, Sf>&& rhs) {
     typename static_ptr<Tf, Sf>::pointer rhs_obj_ptr = rhs.get();
 
     if (rhs_obj_ptr) {
-      rhs.get_lcm()->clone_obj(storage, std::move(*rhs_obj_ptr));
-      rhs.get_lcm()->clone_lcm(storage_lcm);
+      rhs.get_lcm().clone_obj(storage_obj, std::move(*rhs_obj_ptr));
+      rhs.get_lcm().clone_lcm(storage_lcm);
 
       /* Using the already std::moved rhs_obj_ptr is fully intensional. */
       rhs.is_empty = true;
-      rhs.get_lcm()->delete_obj(*rhs_obj_ptr);
+      rhs.get_lcm().delete_obj(*rhs_obj_ptr);
 
       this->is_empty = false;
     }
@@ -127,7 +126,7 @@ public:
    * of static<TypeT, MaxSize). The constructor is present only because
    * of the Return Value Optimization.  */
   static_ptr(static_ptr&& rhs) {
-    _clone(std::move(rhs));
+    _transfer_obj(std::move(rhs));
   }
 
   /* Constructor: move from a compatible variant of static_ptr. Variants
@@ -138,12 +137,12 @@ public:
    *     relationship with type stored by a source one. */
   template <class Tf, size_t Sf>
   static_ptr(static_ptr<Tf, Sf>&& rhs) {
-    static_assert(MaxSize >= Sf,
+    static_assert(element_max_size >= Sf,
                   "constructed from too big static_ptr instance");
-    static_assert(std::is_base_of<TypeT, Tf>::value,
+    static_assert(std::is_base_of<element_type, Tf>::value,
                   "constructed from non-related static_ptr instance");
 
-    _clone(std::move(rhs));
+    _transfer_obj(std::move(rhs));
   }
 
   /* Constructor: the from-make_static case. */
@@ -154,28 +153,28 @@ public:
 
     constexpr size_t tup_size = std::tuple_size<T>::value;
 
-    _make_obj<Type>(std::move(tup), typename gens< tup_size >::type());
+    _make_obj<Type>(std::move(tup), typename gens<tup_size>::type());
   }
 
   /* Assignment: move from a compatible variant of static_ptr. For details
    * please refer to the documentation of the corresponding constructor. */
   template <class Tf, size_t Sf>
   static_ptr& operator=(static_ptr<Tf, Sf>&& rhs) {
-    static_assert(MaxSize >= Sf,
+    static_assert(element_max_size >= Sf,
                   "assigned from too big static_ptr instance");
-    static_assert(std::is_base_of<TypeT, Tf>::value,
+    static_assert(std::is_base_of<element_type, Tf>::value,
                   "assigned from non-related static_ptr instance");
 
     /* First, release (destroy) the currently stored object if necessary. */
     pointer this_obj_ptr = this->get();
     if (this_obj_ptr) {
-      this->get_lcm()->delete_obj(*this_obj_ptr);
+      this->get_lcm().delete_obj(*this_obj_ptr);
       this->is_empty = true;
     }
 
     /* Second, MoveConstruct a new object using our own storage but basing
      * on the object hold by rhs. */
-    _clone(std::move(rhs));
+    _transfer_obj(std::move(rhs));
 
     return *this;
   }
@@ -189,16 +188,16 @@ public:
   ~static_ptr() {
     auto obj = get();
     if (obj) {
-      get_lcm()->delete_obj(*obj);
+      get_lcm().delete_obj(*obj);
     }
   }
 
-  TypeT* operator->() {
+  pointer operator->() const {
     return get();
   }
 
-  pointer get() noexcept {
-    return is_empty ? nullptr : reinterpret_cast<pointer>(storage);
+  pointer get() const noexcept {
+    return is_empty ? nullptr : reinterpret_cast<pointer>(storage_obj);
   }
 
   template <
@@ -206,7 +205,7 @@ public:
     class... Args,
     /* Dummy template parameter solely for SFINAE. */
     typename std::enable_if<
-      std::is_base_of<TypeT, Te>::value>::type* = nullptr >
+      std::is_base_of<element_type, Te>::value>::type* = nullptr >
   bool emplace(Args&&... args) {
     /* The public emplace method can be called on empty static_pointer only. */
     if (is_empty) {
