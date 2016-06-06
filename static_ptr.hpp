@@ -27,17 +27,41 @@ class static_ptr {
   /* All variants of static_ptr are friends. */
   template <class Tf, size_t Sf> friend class static_ptr;
 public:
+  /* Public typedefs and constants. */
   typedef TypeT* pointer;
   typedef TypeT element_type;
   static constexpr size_t element_max_size = MaxSize;
 
 private:
-  /* Virtual constructors for C++... */
+  /* The life cycle manager interface for creation and deletion of objects that
+   * static_ptr stores. Although the deletion part allows us to not enforce
+   * element_type to have its destructor virtual (unlike the std::unique_ptr),
+   * the main motivation here are virtual constructors. The language doesn't
+   * offer them, but they are essential for the move-construct and move-assign
+   * operations.
+   * In contrast to std::unique_ptr and std::shared_ptr, static_ptr's lifetime
+   * is tied to lifetime of an object it has. In consequence, it's not enough to
+   * copy a pointer nor even memcpy the whole storage (this would be sufficient
+   * for PODs only). We need to properly move-construct a new instance each time
+   * someone does:
+   *
+   *     ptrA = std::move(ptrB);
+   *     // or
+   *     ptrC(std::move(ptrD);
+   *
+   * Moreover, static_ptr doesn't directly have information about exact types
+   * of the std::moved objects - they can be anything derived from element_type.
+   * We address this by constructing LCM for each concrete type (see _emplace)
+   * and storing it internally (usually very cheap as LCM needs a VPTR only).
+   *
+   * TODO(rzarzynski): add support for externally-provided LCM implementation.
+   * This would allow for custom deleter. */
   struct LifeCycleManager {
     virtual void clone_obj(void *, element_type&&) const = 0;
     virtual void clone_lcm(void *) const = 0;
 
     virtual void delete_obj(element_type&) const = 0;
+    /* TODO(rzarzynski): take care of LCM cleaning. */
   };
 
   mutable typename std::aligned_storage<element_max_size>::type storage_obj;
@@ -48,6 +72,9 @@ private:
     return reinterpret_cast<const LifeCycleManager&>(storage_lcm);
   }
 
+  /* In-place construct a new object of the Te type as well as a life cycle
+   * manager dedicated to this particular type. Forward all arguments to Te's
+   * constructor. Te must be compatible with the element_type. */
   template <
     class Te,
     class... Args,
@@ -80,7 +107,10 @@ private:
     is_empty = false;
   }
 
-  /* Helpers for make_obj. */
+  /* Helpers for make_obj. We need them only because std::apply will come in
+   * C++17. I know that they seem to be a black magic's spell. However, the idea
+   * is awfully simple: take a std::tuple<> and apply its elements as arguments
+   * to a function. It resembles Python's func(*[arg1, arg2, ...]). */
   template<int ...> struct seq { };
 
   template<int N, int ...S>
@@ -121,10 +151,10 @@ public:
   /* Constructor: the nullptr case. */
   static_ptr(nullptr_t) noexcept : static_ptr() {};
 
-  /* Constructor: move from another instance of absolutely the same
-   * variant of static_ptr. In other words, rhs must be an instance
-   * of static<TypeT, MaxSize). The constructor is present only because
-   * of the Return Value Optimization.  */
+  /* Constructor: move from another instance of absolutely the same variant of
+   * static_ptr. In other words, rhs must be an instance
+   * of static_ptr<element_type, element_max_size). The constructor is present
+   * because of the Return Value Optimization.  */
   static_ptr(static_ptr&& rhs) {
     _transfer_obj(std::move(rhs));
   }
@@ -184,7 +214,6 @@ public:
   static_ptr(const static_ptr&) = delete;
   static_ptr& operator=(const static_ptr&) = delete;
 
-
   ~static_ptr() {
     auto obj = get();
     if (obj) {
@@ -219,28 +248,32 @@ public:
   }
 };
 
+
+/* maxsizeof is a helper function to deduce maximum size of all its parameters
+ * at compile-time. It makes defining factories returning static_ptr easier and
+ * more compact. */
 template <class First>
 constexpr size_t maxsizeof() {
   return sizeof(First);
 }
 
-template <class First, class Second, class... Args>
+template <class First, class Second, class... Tail>
 constexpr size_t maxsizeof() {
-  return maxsizeof<First>() > maxsizeof<Second, Args...>()
+  return maxsizeof<First>() > maxsizeof<Second, Tail...>()
                             ? maxsizeof<First>()
-                            : maxsizeof<Second, Args...>();
+                            : maxsizeof<Second, Tail...>();
 }
 
 
 /* C++ doesn't allow to explicitly specify parameters for template constructor
  * of a class template. They can be deduced only. Because of the restriction we
- * need a helper function to construct an instance of static_ptr::element_type
- * directly in the memory under static_ptr::storage_obj - without spawning any
- * temporary of static_ptr::element_type along the way.
+ * need a helper function to construct an instance of a concrete type directly
+ * in the memory under static_ptr::storage_obj - without spawning any temporary
+ * of static_ptr::element_type-or-derived along the way.
  *
  * The idea is to prepare a std::tuple containing all information necessary to
  * create an object in its final destination and pass it to specific template
- * constructor of static_ptr that can live with the deduction-only limitation.
+ * constructor of static_ptr.
  * The std::tuple object should be optimized out thanks to the RVO.
  *
  * Another benefit is the similarity to std::make_shared and std::make_unique
@@ -248,8 +281,8 @@ constexpr size_t maxsizeof() {
 template <class T, class... Args>
 std::tuple<T*, Args...> make_static(Args&&... args)
 {
-  /* As C++ doesn't offer a template constructor for a class template it's
-   * impossible to construct the static_ptr::element_type inside  */
+  /* Let's forward the information about the concrete type to in-place create
+   * in static_ptr as a fake null pointer. Its type will be burried in the tuple. */
   return std::forward_as_tuple(static_cast<T*>(nullptr),
                                std::forward<Args>(args)...);
 }
