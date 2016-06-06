@@ -196,6 +196,10 @@ public:
     return get();
   }
 
+  element_type& operator*() const {
+    return *get();
+  }
+
   pointer get() const noexcept {
     return is_empty ? nullptr : reinterpret_cast<pointer>(&storage_obj);
   }
