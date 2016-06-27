@@ -181,6 +181,11 @@ public:
     using TypePtr = typename std::tuple_element<0, T>::type;
     using Type    = typename std::remove_pointer<TypePtr>::type;
 
+    static_assert(element_max_size >= sizeof(Type),
+                  "constructed from too big class");
+    static_assert(std::is_base_of<element_type, Type>::value,
+                  "constructed from non-related class");
+
     constexpr size_t tup_size = std::tuple_size<T>::value;
 
     _make_obj<Type>(std::move(tup), typename gens<tup_size>::type());
