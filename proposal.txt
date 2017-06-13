@@ -1,0 +1,151 @@
+Subject: static_ptr - making the factory pattern less costly
+
+Hello Cephers,
+
+I would like to put into your consideration the idea that came after
+the RadosGW's auth subsystem rework. Reviewers of the pull request
+raised concerns about introducing new memory allocations in the main
+path of execution. Most of them have been successfully addressed using
+already available tools (either in the standard library or Boost) and
+the PR was merged. However, in few cases there was no simple solution.
+Those cases were orbiting mostly around the factory pattern:
+
+  std::unique_ptr<ProductInterface> Factory::get_instance(...) {
+    if (...) {
+      // in C++14 we can also:
+      // return std::make_unique<ConcreteProductA>();
+      return new ConcreteProductA();
+    } else {
+      return new ConcreteProductB();
+    }
+  }
+
+Although mentioning specific pull request, I believe the problem is more
+generic. I saw the factory pattern is being used quite extensively across
+RadosGW's code (RGWOp creation, formatters, auth appliers to name a few).
+I'm pretty sure that other components also employs this useful idiom.
+
+The issue is that the memory is dynamically allocated even for cases
+where a consumer really could use its own stack frame instead. In C++
+we can inverse the responsibility of allocating memory from factory
+to its callers by applying the placement-new:
+
+  ProductInterface* Factory::get_instance(void* area, ...) {
+    if (...) {
+      return new (area) ConcreteProductA();
+    } else {
+      return new (area) ConcreteProductB();
+    }
+  }
+
+As consumers allocate memory now, they need to somehow discover the storage
+size that is necessary to store a product. In many situations factories know
+at compile-time maximum size of what they produce, so constexpr can be used:
+
+  constexpr size_t Factory::get_max_size() {
+    return max(sizeof(ConcreteProductA), sizeof(ConcreteProductB));
+  }
+
+  void consumer() {
+    unsigned char storage[Factory::get_max_size()];
+    ProductInterface* product = Factory::get_instance(storage);
+
+    // Use the product.
+    // ...
+
+    // Destroy it.
+    product->~ProductInterface();
+  }
+
+Unfortunately, implementing the factory pattern in that way has drawbacks:
+
+1. It's dangerous. Someone might extend the get_instance() to produce
+a new ConcreteProductC that is bigger than everything before. If he
+forgets to alter get_max_size() accordingly, a data corruption will
+occur.
+
+2. Factory has no way to bind a deleter with a product.
+
+3. Callers must destroy the product through calling a destructor explicitly.
+
+4. Destructor of ProductInterface must be made virtual. Otherwise only
+a sub-object will be cleaned. This is also true for std::unique_ptr but
+not for std::shared_ptr.
+
+5. Moving objects (if products are move-constructible) in memory is
+a headache. Simply copying the memory is enough only for PODs. Anything
+more complex requires spawning a proper constructor but consumer is (or
+at least should be) unaware which implementation of a given interface it
+really uses. 
+
+6. It's simply not elegant: evidently a implementation details (memory
+allocation) leak and pollute interfaces and interactions. Consumer must
+be aware about the low-level stuff (the explicit call to dtor).
+
+I had a few conversations with Adam Emerson, Casey Bodley and Matt
+Benjamin about researching an already existing solution. Unfortunately,
+we haven't found anything suitable. Instead, we realized the whole issue
+might be addressed by a concept that mixes some ideas present in things
+like boost::optional, boost::container::static_vector and std::unique_ptr.
+Let's call the new thing static_ptr due to similarity to static_vector
+of Boost.
+
+static_ptr might be seen as a fusion between raw pointer and encapsulated
+storage like in boost::optional. However, in contrast to it the capacity
+might be different than the pointee. It's fixed to a certain amount at
+compile-time (similarly to boost::container::static_vector). The owning
+semantic has been taken from std::unique_ptr. The overhead is actually one
+pointer and one boolean. It can be further minimized by cutting the bool.
+
+An early POC is available [1][2]. Its usage looks like below:
+
+  static_ptr<ProductInterface,
+             maxsizeof(ConcreteProductA, ConcreteProductB)>
+  Factory::get_instance(...) {
+    if (...) {
+      // It's guaranteed that any mismatch between size of product
+      // and storage in static_ptr will be detected in compile-time.
+      return make_static<ConcreteProductA>();
+    } else {
+      return make_static<ConcreteProductB>();
+    }
+  }
+
+  void consumer() {
+    auto product = Factory::get_instance();
+
+    // Use the product or even std::move it to a different pointer instance.
+    // ...
+
+    // It's destroyed properly even if the destructor of ProductInterface
+    // is not virtual.
+  }
+
+At the moment many things need further efforts. I see following items:
+
+1. Unit tests! A lot of unit tests! This might be painful as we have a very
+specific requirement here: it's expected that a compilation will fail in
+some circumstances (eg. std::moving a contained object to static_ptr that
+doesn't offer necessary amount of storage). Many frameworks will fall off
+due to that. In the worst case a bunch of scripts would be used to cover
+negative tests.
+
+2. make_static is definitely too complex. This is because it's built around
+std::tuple while native support for std::apply will be available with C++17.
+Adam Emerson proposed a simple solution to the issue. We might also want to
+take a look on Boost's typed in-place factories.
+
+3. Further overhead optimizations.
+
+4. Custom deleters. The required infrastructure is already in place.
+
+5. ?
+
+I would kindly ask you for comments and opinions about the concept as well
+as its adoption in Ceph.
+
+Regards,
+Radoslaw Zarzynski
+
+[1] https://github.com/rzarzynski/static_ptr/blob/master/static_ptr.hpp
+[2] https://github.com/rzarzynski/static_ptr/blob/master/examples/basic_usage.cc
